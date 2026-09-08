@@ -1,14 +1,14 @@
-import type { IncomingMessage, ServerResponse } from 'http';
 import { fetchAllJobs } from '../src/services/jobApis';
+import { filterAndSortJobs } from '../src/services/scorer';
 import { publicConfig } from './env';
 import { readJson, sendJson } from './http';
 import { jobBlocks, postToSlack } from './slackPost';
 
-export async function handleConfig(_req: IncomingMessage, res: ServerResponse) {
+export async function handleConfig(_req: any, res: any) {
   sendJson(res, 200, publicConfig());
 }
 
-export async function handleSearch(req: IncomingMessage, res: ServerResponse) {
+export async function handleSearch(req: any, res: any) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
     return;
@@ -18,13 +18,14 @@ export async function handleSearch(req: IncomingMessage, res: ServerResponse) {
     const body = await readJson(req);
     const sources: { name: string; count: number; status: string; detail?: string }[] = [];
     const jobs = await fetchAllJobs((status) => sources.push(status), body.prefs);
-    sendJson(res, 200, { jobs, sources });
+    const matched = body.prefs ? filterAndSortJobs(jobs, body.prefs) : jobs;
+    sendJson(res, 200, { jobs: matched, sources });
   } catch (e) {
     sendJson(res, 500, { error: e instanceof Error ? e.message : 'Search failed' });
   }
 }
 
-export async function handleSlack(req: IncomingMessage, res: ServerResponse) {
+export async function handleSlack(req: any, res: any) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
     return;

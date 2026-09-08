@@ -48,14 +48,16 @@ function makeJob(partial: Omit<Job, 'matchScore' | 'matchedSkills' | 'missingSki
   };
 }
 
+const FETCH_MS = 6000;
+
 async function fetchJson(url: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(20000) });
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_MS) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_MS) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
@@ -127,7 +129,7 @@ async function fetchHimalayas(prefs?: Preferences): Promise<Job[]> {
   const jobs: Job[] = [];
   let cursor = '';
 
-  for (let page = 0; page < 3; page++) {
+  for (let page = 0; page < 1; page++) {
     const qs = new URLSearchParams({ limit: '20' });
     if (cursor) qs.set('cursor', cursor);
     const url = `https://himalayas.app/jobs/api?${qs}`;
@@ -199,7 +201,7 @@ async function fetchJobicy(prefs?: Preferences): Promise<Job[]> {
 }
 
 async function fetchTheMuse(): Promise<Job[]> {
-  const pages = await Promise.all([0, 1].map((page) =>
+  const pages = await Promise.all([0].map((page) =>
     fetchJson(`https://www.themuse.com/api/public/jobs?page=${page}&descending=true&category=${encodeURIComponent('Software Engineering')}`)
   ));
 
@@ -225,7 +227,6 @@ async function fetchTheMuse(): Promise<Job[]> {
 async function fetchWeWorkRemotely(): Promise<Job[]> {
   const feeds = [
     '/categories/remote-programming-jobs.rss',
-    '/categories/remote-full-stack-programming-jobs.rss',
   ];
 
   const xmls = await Promise.allSettled(
@@ -290,8 +291,6 @@ async function fetchJSearchAll(prefs?: Preferences): Promise<Job[]> {
   const queries = [
     `${title} remote via linkedin`,
     `${title} jobs in ${location} via linkedin`,
-    `${title} remote via indeed`,
-    `${title} remote`,
   ];
 
   const results = await Promise.allSettled(
