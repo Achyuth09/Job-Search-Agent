@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Job, Preferences, SearchState } from './types';
-import { defaultPreferences } from './data/defaults';
-import { fetchAllJobs, SourceStatus } from './services/jobApis';
+import { defaultPreferences, POSTED_WITHIN_OPTIONS } from './data/defaults';
+import { fetchAllJobs } from './services/searchClient';
+import { loadPublicConfig } from './services/configClient';
+import { JOB_SOURCE_NAMES, AGGREGATED_SOURCES, SourceStatus } from './services/sources';
 import { filterAndSortJobs } from './services/scorer';
 import { sendToSlack, sendBulkToSlack, testWebhook } from './services/slack';
+import { formatDistanceToNow } from 'date-fns';
+
 import {
   Search, Settings, Send, CheckCircle2, XCircle, Loader2,
-  ExternalLink, Sliders, Zap, Briefcase, Bell, X, ChevronDown, ChevronUp,
+  ExternalLink, Sliders, Zap, Briefcase, Bell, X, ChevronDown, ChevronUp, MinusCircle,
 } from 'lucide-react';
 
 type Tab = 'search' | 'results' | 'settings';
@@ -15,11 +19,11 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('search');
   const [prefs, setPrefs] = useState<Preferences>(() => {
     const saved = localStorage.getItem('ajh_prefs');
-    return saved ? JSON.parse(saved) : defaultPreferences;
+    return saved ? { ...defaultPreferences, ...JSON.parse(saved) } : defaultPreferences;
   });
-  const [webhookUrl, setWebhookUrl] = useState(() => 
-    localStorage.getItem('ajh_webhook') || import.meta.env.VITE_SLACK_WEBHOOK_URL || ''
-  );
+  const [slackConfigured, setSlackConfigured] = useState(false);
+  const [slackChannel, setSlackChannel] = useState('JONSEARCHAUTO');
+  const [jsearchEnabled, setJsearchEnabled] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [searchState, setSearchState] = useState<SearchState>({
     status: 'idle', totalFetched: 0, totalMatched: 0, sources: [],
@@ -33,6 +37,7 @@ export default function App() {
   });
   const [showPrefs, setShowPrefs] = useState(false);
   const [webhookTestResult, setWebhookTestResult] = useState<'idle' | 'success' | 'fail'>('idle');
+  const [webhookTestError, setWebhookTestError] = useState('');
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
 
   // Save prefs to localStorage
@@ -41,8 +46,12 @@ export default function App() {
   }, [prefs]);
 
   useEffect(() => {
-    localStorage.setItem('ajh_webhook', webhookUrl);
-  }, [webhookUrl]);
+    loadPublicConfig().then((config) => {
+      setSlackConfigured(config.slackConfigured);
+      setSlackChannel(config.slackChannel);
+      setJsearchEnabled(config.jsearchEnabled);
+    });
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('ajh_sent', JSON.stringify([...sentJobs]));
@@ -51,11 +60,13 @@ export default function App() {
   const runSearch = useCallback(async () => {
     setSearchState({ status: 'searching', totalFetched: 0, totalMatched: 0, sources: [] });
     setSourceUpdates([]);
+    const updates: SourceStatus[] = [];
 
     try {
       const allJobs = await fetchAllJobs((status) => {
+        updates.push(status);
         setSourceUpdates(prev => [...prev, status]);
-      });
+      }, prefs);
 
       const matched = filterAndSortJobs(allJobs, prefs);
 
@@ -64,11 +75,7 @@ export default function App() {
         status: 'done',
         totalFetched: allJobs.length,
         totalMatched: matched.length,
-        sources: sourceUpdates.length > 0 ? sourceUpdates : [
-          { name: 'Remotive', count: allJobs.filter(j => j.source === 'Remotive').length, status: 'success' },
-          { name: 'Arbeitnow', count: allJobs.filter(j => j.source === 'Arbeitnow').length, status: 'success' },
-          { name: 'RemoteOK', count: allJobs.filter(j => j.source === 'RemoteOK').length, status: 'success' },
-        ],
+        sources: updates,
       });
       setTab('results');
     } catch (e) {
@@ -76,25 +83,25 @@ export default function App() {
         status: 'error',
         totalFetched: 0,
         totalMatched: 0,
-        sources: [],
+        sources: updates,
         error: String(e),
       });
     }
-  }, [prefs, sourceUpdates]);
+  }, [prefs]);
 
   const handleSendToSlack = async (job: Job) => {
-    if (!webhookUrl) {
+    if (!slackConfigured) {
       setTab('settings');
       return;
     }
-    const success = await sendToSlack(webhookUrl, job);
+    const success = await sendToSlack(job);
     if (success) {
       setSentJobs(prev => new Set([...prev, job.id]));
     }
   };
 
   const handleSendAllToSlack = async () => {
-    if (!webhookUrl) {
+    if (!slackConfigured) {
       setTab('settings');
       return;
     }
@@ -104,7 +111,7 @@ export default function App() {
     setSendingToSlack(true);
     setSlackProgress({ sent: 0, total: unsent.length });
 
-    const result = await sendBulkToSlack(webhookUrl, unsent, (sent, total) => {
+    const result = await sendBulkToSlack(unsent, (sent, total) => {
       setSlackProgress({ sent, total });
     });
 
@@ -117,8 +124,10 @@ export default function App() {
 
   const handleTestWebhook = async () => {
     setWebhookTestResult('idle');
-    const ok = await testWebhook(webhookUrl);
-    setWebhookTestResult(ok ? 'success' : 'fail');
+    setWebhookTestError('');
+    const result = await testWebhook();
+    setWebhookTestResult(result.ok ? 'success' : 'fail');
+    setWebhookTestError(result.error || '');
   };
 
   const unsentCount = jobs.filter(j => !sentJobs.has(j.id)).length;
@@ -155,8 +164,8 @@ export default function App() {
               </div>
               <h2 className="text-xl font-bold text-gray-900">Job Search Agent</h2>
               <p className="text-sm text-gray-500 mt-2 max-w-md mx-auto">
-                Automatically searches job portals, filters matches based on your profile,
-                and sends the best opportunities to your Slack channel.
+                Searches LinkedIn, Indeed, Himalayas, The Muse, We Work Remotely, and more,
+                then scores matches and can send the best ones to Slack.
               </p>
               <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-50 text-green-700 text-xs font-medium">
                 <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
@@ -180,30 +189,45 @@ export default function App() {
                   </>
                 )}
               </button>
+              <p className="text-xs text-gray-400 mt-3">
+                {prefs.postedWithinDays > 0
+                  ? `Only jobs posted in the last ${
+                      prefs.postedWithinDays === 1
+                        ? '24 hours'
+                        : prefs.postedWithinDays === 7
+                          ? 'week'
+                          : `${prefs.postedWithinDays} days`
+                    }. Change this in Search Preferences.`
+                  : 'Showing jobs from any date. Change this in Search Preferences.'}
+              </p>
             </div>
 
             {/* Search Progress */}
             {searchState.status === 'searching' && (
               <div className="bg-white rounded-xl border border-gray-200 p-6">
                 <h3 className="text-sm font-semibold text-gray-900 mb-3">Fetching from job sources...</h3>
-                <div className="space-y-2">
-                  {['Remotive', 'Arbeitnow', 'RemoteOK'].map(source => {
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {JOB_SOURCE_NAMES.map(source => {
                     const update = sourceUpdates.find(s => s.name === source);
                     return (
                       <div key={source} className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
                         {update ? (
                           update.status === 'success' ? (
-                            <CheckCircle2 className="h-4 w-4 text-green-500" />
+                            <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+                          ) : update.status === 'skipped' ? (
+                            <MinusCircle className="h-4 w-4 text-amber-500 flex-shrink-0" />
                           ) : (
-                            <XCircle className="h-4 w-4 text-red-500" />
+                            <XCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
                           )
                         ) : (
-                          <Loader2 className="h-4 w-4 text-indigo-500 animate-spin" />
+                          <Loader2 className="h-4 w-4 text-indigo-500 animate-spin flex-shrink-0" />
                         )}
                         <span className="text-sm text-gray-700">{source}</span>
                         {update && (
                           <span className="text-xs text-gray-500 ml-auto">
-                            {update.count} jobs found
+                            {update.status === 'skipped'
+                              ? 'needs API key'
+                              : `${update.count} jobs`}
                           </span>
                         )}
                       </div>
@@ -231,6 +255,25 @@ export default function App() {
                     <p className="text-xs text-purple-600">Unsent to Slack</p>
                   </div>
                 </div>
+                {searchState.sources.length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-1.5">
+                    {searchState.sources.map(source => (
+                      <span
+                        key={source.name}
+                        className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                          source.status === 'success'
+                            ? 'bg-green-50 text-green-700'
+                            : source.status === 'skipped'
+                              ? 'bg-amber-50 text-amber-700'
+                              : 'bg-red-50 text-red-700'
+                        }`}
+                      >
+                        {source.name}
+                        {source.status === 'success' ? ` · ${source.count}` : source.status === 'skipped' ? ' · key needed' : ' · failed'}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="mt-4 flex gap-2">
                   <button
                     onClick={() => setTab('results')}
@@ -238,7 +281,7 @@ export default function App() {
                   >
                     View Results →
                   </button>
-                  {unsentCount > 0 && webhookUrl && (
+                  {unsentCount > 0 && slackConfigured && (
                     <button
                       onClick={handleSendAllToSlack}
                       disabled={sendingToSlack}
@@ -288,6 +331,10 @@ export default function App() {
                     onAdd={(v) => setPrefs({ ...prefs, locations: [...prefs.locations, v] })}
                     color="purple"
                   />
+                  <PostedWithinPicker
+                    value={prefs.postedWithinDays}
+                    onChange={(postedWithinDays) => setPrefs({ ...prefs, postedWithinDays })}
+                  />
                   <div>
                     <label className="text-xs font-medium text-gray-600">Min Match Score: {prefs.minMatchScore}%</label>
                     <input
@@ -311,9 +358,15 @@ export default function App() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Matched Jobs</h2>
-                <p className="text-sm text-gray-500">{jobs.length} jobs found • {unsentCount} not yet sent to Slack</p>
+                <p className="text-sm text-gray-500">
+                  {jobs.length} jobs found
+                  {prefs.postedWithinDays > 0
+                    ? ` • posted in the last ${prefs.postedWithinDays === 1 ? '24 hours' : `${prefs.postedWithinDays} days`}`
+                    : ''}
+                  {' '}• {unsentCount} not yet sent to Slack
+                </p>
               </div>
-              {unsentCount > 0 && webhookUrl && (
+              {unsentCount > 0 && slackConfigured && (
                 <button
                   onClick={handleSendAllToSlack}
                   disabled={sendingToSlack}
@@ -355,7 +408,7 @@ export default function App() {
                     expanded={expandedJob === job.id}
                     onToggle={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
                     onSend={() => handleSendToSlack(job)}
-                    hasWebhook={!!webhookUrl}
+                    hasWebhook={slackConfigured}
                   />
                 ))}
               </div>
@@ -370,13 +423,17 @@ export default function App() {
               <div className="flex items-center gap-2 mb-4">
                 <Bell className="h-5 w-5 text-indigo-600" />
                 <h3 className="text-sm font-semibold text-gray-900">Slack Integration</h3>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-medium">
-                  <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
-                  Pre-configured
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  slackConfigured ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
+                }`}>
+                  <div className={`h-1.5 w-1.5 rounded-full ${slackConfigured ? 'bg-green-500' : 'bg-amber-500'}`} />
+                  {slackConfigured ? 'Server configured' : 'Missing SLACK_WEBHOOK_URL'}
                 </span>
               </div>
               <p className="text-xs text-gray-500 mb-3">
-                Your Slack webhook is already configured. You can update it below or create a new one at{' '}
+                Alerts go to <span className="font-semibold text-gray-700">#{slackChannel}</span>.
+                The webhook stays on the server as <code className="bg-gray-100 px-1 rounded">SLACK_WEBHOOK_URL</code> (Secret).
+                Set <code className="bg-gray-100 px-1 rounded">SLACK_CHANNEL</code> as Config — it is only a channel name.{' '}
                 <a
                   href="https://api.slack.com/messaging/webhooks"
                   target="_blank"
@@ -386,32 +443,50 @@ export default function App() {
                   api.slack.com/messaging/webhooks
                 </a>
               </p>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  value={webhookUrl}
-                  onChange={(e) => setWebhookUrl(e.target.value)}
-                  placeholder="https://hooks.slack.com/services/..."
-                  className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-                <button
-                  onClick={handleTestWebhook}
-                  disabled={!webhookUrl}
-                  className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Test
-                </button>
-              </div>
+              <button
+                onClick={handleTestWebhook}
+                disabled={!slackConfigured}
+                className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                Test Slack
+              </button>
               {webhookTestResult === 'success' && (
                 <p className="text-xs text-green-600 mt-2 flex items-center gap-1">
-                  <CheckCircle2 className="h-3 w-3" /> Webhook is working!
+                  <CheckCircle2 className="h-3 w-3" /> Webhook is working! Check #{slackChannel} in Slack.
                 </p>
               )}
               {webhookTestResult === 'fail' && (
                 <p className="text-xs text-red-600 mt-2 flex items-center gap-1">
-                  <XCircle className="h-3 w-3" /> Webhook test failed. Check the URL.
+                  <XCircle className="h-3 w-3" />
+                  Webhook test failed{webhookTestError ? `: ${webhookTestError}` : '. Check the URL.'}
                 </p>
               )}
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-200 p-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-2">Job Sources</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Public boards are searched automatically. LinkedIn, Indeed, Glassdoor, ZipRecruiter, and Google Jobs
+                need a free RapidAPI JSearch key in <code className="bg-gray-100 px-1 rounded">.env</code> as{' '}
+                <code className="bg-gray-100 px-1 rounded">RAPIDAPI_KEY</code>. Restart the dev server after adding it.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {JOB_SOURCE_NAMES.map((name) => {
+                  const needsKey = (AGGREGATED_SOURCES as readonly string[]).includes(name);
+                  const enabled = !needsKey || jsearchEnabled;
+                  return (
+                    <span
+                      key={name}
+                      className={`inline-flex px-2 py-1 rounded-lg text-xs font-medium ${
+                        enabled ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
+                      }`}
+                    >
+                      {name}
+                      {!enabled ? ' · add key' : ''}
+                    </span>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="bg-white rounded-xl border border-gray-200 p-6">
@@ -438,6 +513,10 @@ export default function App() {
                   onAdd={(v) => setPrefs({ ...prefs, locations: [...prefs.locations, v] })}
                   color="purple"
                 />
+                <PostedWithinPicker
+                  value={prefs.postedWithinDays}
+                  onChange={(postedWithinDays) => setPrefs({ ...prefs, postedWithinDays })}
+                />
                 <div>
                   <label className="text-xs font-medium text-gray-600">Min Match Score: {prefs.minMatchScore}%</label>
                   <input
@@ -456,10 +535,10 @@ export default function App() {
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Agent Pipeline</h3>
               <div className="space-y-2">
                 {[
-                  { step: '1. Search', desc: 'Fetches jobs from Remotive, Arbeitnow, RemoteOK', icon: Search },
+                  { step: '1. Search', desc: 'Fetches jobs from LinkedIn, Indeed, Himalayas, The Muse, We Work Remotely, and more', icon: Search },
                   { step: '2. Score', desc: 'Matches jobs against your skills & preferences', icon: Sliders },
-                  { step: '3. Filter', desc: 'Removes duplicates and low-quality matches', icon: Sliders },
-                  { step: '4. Notify', desc: 'Sends best matches to your Slack channel', icon: Send },
+                  { step: '3. Filter', desc: 'Drops older postings, duplicates, and low-quality matches', icon: Sliders },
+                  { step: '4. Notify', desc: `Sends best matches to Slack #${slackChannel}`, icon: Send },
                 ].map(item => (
                   <div key={item.step} className="flex items-start gap-3 p-2 rounded-lg bg-gray-50">
                     <item.icon className="h-4 w-4 text-indigo-500 mt-0.5 flex-shrink-0" />
@@ -500,6 +579,10 @@ function JobCard({ job, sent, expanded, onToggle, onSend, hasWebhook }: {
   const scoreColor = job.matchScore >= 70 ? 'text-green-700 bg-green-50' :
                      job.matchScore >= 50 ? 'text-yellow-700 bg-yellow-50' :
                      'text-gray-600 bg-gray-100';
+  const postedAt = job.publishedAt ? new Date(job.publishedAt) : null;
+  const postedLabel = postedAt && !Number.isNaN(postedAt.getTime())
+    ? formatDistanceToNow(postedAt, { addSuffix: true })
+    : '';
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:border-gray-300 transition-colors">
@@ -519,6 +602,7 @@ function JobCard({ job, sent, expanded, onToggle, onSend, hasWebhook }: {
             </div>
             <p className="text-xs text-gray-500 mt-1">
               {job.company} • {job.location} {job.remote && '• Remote'} • {job.source}
+              {postedLabel && ` • ${postedLabel}`}
             </p>
             {job.matchedSkills.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-2">
@@ -573,6 +657,30 @@ function JobCard({ job, sent, expanded, onToggle, onSend, hasWebhook }: {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function PostedWithinPicker({ value, onChange }: { value: number; onChange: (days: number) => void }) {
+  return (
+    <div>
+      <label className="text-xs font-medium text-gray-600">Posted within</label>
+      <div className="flex flex-wrap gap-1.5 mt-1.5">
+        {POSTED_WITHIN_OPTIONS.map((option) => (
+          <button
+            key={option.days}
+            type="button"
+            onClick={() => onChange(option.days)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+              value === option.days
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

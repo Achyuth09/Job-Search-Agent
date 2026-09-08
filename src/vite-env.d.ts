@@ -1,9 +1,13 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_SLACK_WEBHOOK_URL: string
-}
+declare const process: { env: Record<string, string | undefined> };
 
 interface ImportMeta {
   readonly env: ImportMetaEnv
+}
+
+interface ImportMetaEnv {
+  readonly DEV: boolean
+  readonly PROD: boolean
+  readonly MODE: string
 }

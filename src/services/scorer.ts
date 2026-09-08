@@ -68,9 +68,20 @@ export function scoreJob(job: Job, prefs: Preferences): Job {
   };
 }
 
+export function isPostedWithin(job: Job, postedWithinDays: number): boolean {
+  if (!postedWithinDays) return true;
+  const posted = new Date(job.publishedAt).getTime();
+  if (!job.publishedAt || Number.isNaN(posted)) return false;
+  return Date.now() - posted <= postedWithinDays * 24 * 60 * 60 * 1000;
+}
+
 export function filterAndSortJobs(jobs: Job[], prefs: Preferences): Job[] {
   return jobs
+    .filter(job => isPostedWithin(job, prefs.postedWithinDays))
     .map(job => scoreJob(job, prefs))
     .filter(job => job.matchScore >= prefs.minMatchScore)
-    .sort((a, b) => b.matchScore - a.matchScore);
+    .sort((a, b) => {
+      if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+      return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+    });
 }

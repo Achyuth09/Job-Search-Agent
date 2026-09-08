@@ -21,11 +21,13 @@ export interface Preferences {
   locations: string[];
   experienceLevel: string;
   minMatchScore: number;
+  /** Keep jobs posted in this many days. 0 = any time. */
+  postedWithinDays: number;
 }
 
 export interface SlackConfig {
-  webhookUrl: string;
   channel: string;
+  configured: boolean;
 }
 
 export interface SearchState {

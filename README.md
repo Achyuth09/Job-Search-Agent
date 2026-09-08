@@ -4,8 +4,8 @@ An intelligent job search agent that automatically finds jobs matching your prof
 
 ## ✨ Features
 
-- 🔍 **Multi-Source Search** — Fetches jobs from Remotive, Arbeitnow, and RemoteOK
-- 🎯 **Smart Scoring** — Matches jobs against your skills, experience, and location preferences
+- 🔍 **Multi-Source Search** — Fetches jobs from LinkedIn, Indeed, Glassdoor, ZipRecruiter, Himalayas, Jobicy, The Muse, We Work Remotely, Remotive, Arbeitnow, and RemoteOK
+- 🕒 **Fresh listings** — Defaults to jobs posted in the last week; tighten to 24 hours / 3 days or widen it from Settings
 - 📬 **Slack Notifications** — Sends formatted job alerts to your Slack channel
 - 🔄 **Deduplication** — Removes duplicate jobs across sources
 - ⚙️ **Customizable** — Edit job titles, technologies, and locations from the UI
@@ -31,11 +31,29 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env` and add your Slack webhook URL:
+Edit `.env`. Do **not** prefix these with `VITE_` — that would expose them in the browser.
 
 ```
-VITE_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+SLACK_CHANNEL=JONSEARCHAUTO
+RAPIDAPI_KEY=
 ```
+
+On Vercel / similar hosts:
+- `SLACK_WEBHOOK_URL` → **Sensitive / Secret**
+- `SLACK_CHANNEL` → **Config** (safe to be public; it is only a channel name)
+- `RAPIDAPI_KEY` → **Sensitive / Secret**
+
+#### Optional: LinkedIn, Indeed, Glassdoor, ZipRecruiter
+
+Those sites do not offer public job APIs. This app uses [JSearch on RapidAPI](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch) as an aggregator:
+
+1. Create a free RapidAPI account
+2. Subscribe to the JSearch API (free tier)
+3. Put the key in `.env` as `RAPIDAPI_KEY=...` (no `VITE_` prefix)
+4. Restart `npm run dev`
+
+Without this key, the public boards (Himalayas, Jobicy, The Muse, We Work Remotely, Remotive, Arbeitnow, RemoteOK) still work.
 
 #### How to get your Slack webhook URL:
 
@@ -46,7 +64,16 @@ VITE_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 5. Select your channel and authorize
 6. Copy the webhook URL
 
-### 4. Run the app
+### 4. Deploy (Vercel)
+
+1. Import the GitHub repo
+2. Add environment variables — **no `VITE_` prefix**:
+   - `SLACK_WEBHOOK_URL` as **Sensitive**
+   - `SLACK_CHANNEL` as **Config** (e.g. `JONSEARCHAUTO`)
+   - `RAPIDAPI_KEY` as **Sensitive** (optional)
+3. Deploy. The app uses `/api/search` and `/api/slack` so secrets stay on the server.
+
+### 5. Run the app locally
 
 ```bash
 npm run dev
@@ -54,7 +81,7 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### 5. Search for jobs
+### 6. Search for jobs
 
 1. Click **"Search for Jobs"**
 2. Review scored results
@@ -120,9 +147,10 @@ Jobs below the minimum match score threshold are filtered out.
 
 ## 🔒 Security
 
-- Slack webhook URL is stored in `.env` (never committed to git)
-- All job sources use public APIs — no credentials needed
-- No user data is stored on any server
+- Slack webhook and RapidAPI keys stay on the server (`SLACK_WEBHOOK_URL`, `RAPIDAPI_KEY`) — never `VITE_`
+- The browser only calls `/api/search`, `/api/slack`, and `/api/config`
+- `SLACK_CHANNEL` is a public Config value (channel name only)
+- `.env` is gitignored and is not committed
 
 ## 📝 License
 
