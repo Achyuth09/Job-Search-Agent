@@ -1,0 +1,37 @@
+export interface Job {
+  id: string;
+  title: string;
+  company: string;
+  location: string;
+  remote: boolean;
+  url: string;
+  description: string;
+  tags: string[];
+  salary?: string;
+  publishedAt: string;
+  source: string;
+  matchScore: number;
+  matchedSkills: string[];
+  missingSkills: string[];
+}
+
+export interface Preferences {
+  jobTitles: string[];
+  technologies: string[];
+  locations: string[];
+  experienceLevel: string;
+  minMatchScore: number;
+}
+
+export interface SlackConfig {
+  webhookUrl: string;
+  channel: string;
+}
+
+export interface SearchState {
+  status: 'idle' | 'searching' | 'done' | 'error';
+  totalFetched: number;
+  totalMatched: number;
+  sources: { name: string; count: number; status: string }[];
+  error?: string;
+}
